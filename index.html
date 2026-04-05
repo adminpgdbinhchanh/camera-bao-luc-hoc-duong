@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Camera phát hiện nguy cơ bạo lực học đường</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #eef3fb;
+      color: #1f2937;
+      padding: 20px;
+    }
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+    .card {
+      background: #fff;
+      border-radius: 16px;
+      padding: 20px;
+      box-shadow: 0 6px 18px rgba(0,0,0,.08);
+      margin-bottom: 20px;
+    }
+    h1, h2 {
+      margin-top: 0;
+      color: #0f172a;
+    }
+    .sub {
+      color: #475569;
+      margin-bottom: 18px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1.15fr;
+      gap: 20px;
+    }
+    label {
+      display: block;
+      font-weight: 700;
+      margin-top: 12px;
+      margin-bottom: 6px;
+    }
+    input, textarea, button {
+      width: 100%;
+      padding: 11px 12px;
+      border: 1px solid #cbd5e1;
+      border-radius: 10px;
+      font-size: 15px;
+    }
+    textarea {
+      min-height: 84px;
+      resize: vertical;
+    }
+    .btn-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 10px;
+      margin-top: 16px;
+    }
+    button {
+      border: none;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .btn-primary { background: #2563eb; color: #fff; }
+    .btn-warning { background: #f59e0b; color: #fff; }
+    .btn-success { background: #16a34a; color: #fff; }
+    .btn-danger { background: #dc2626; color: #fff; }
+    video, canvas, img {
+      width: 100%;
+      border-radius: 14px;
+      border: 1px solid #cbd5e1;
+      background: #000;
+    }
+    .preview {
+      display: none;
+      margin-top: 12px;
+      background: #fff;
+    }
+    .status {
+      padding: 16px;
+      border-radius: 14px;
+      font-weight: 700;
+      line-height: 1.5;
+    }
+    .SAFE   { background: #e8f5e9; color: #166534; }
+    .LOW    { background: #fff8e1; color: #92400e; }
+    .MEDIUM { background: #ffe4c7; color: #c2410c; }
+    .HIGH   { background: #ffebee; color: #b91c1c; }
+    .muted {
+      color: #64748b;
+      font-size: 14px;
+    }
+    ul { margin-top: 8px; padding-left: 18px; }
+    a { color: #2563eb; }
+    @media (max-width: 900px) {
+      .grid, .btn-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="card">
+      <h1>Ứng dụng camera phát hiện nguy cơ bạo lực học đường</h1>
+      <div class="sub">
+        Frontend mở camera trên trình duyệt, gửi ảnh lên Apps Script để phân tích bằng Gemini,
+        sau đó lưu nhật ký vào Google Sheets và lưu ảnh vào Google Drive.
+      </div>
+
+      <div class="grid">
+        <div>
+          <label>Họ và tên học sinh</label>
+          <input id="studentName" placeholder="Ví dụ: Nguyễn Văn A" />
+
+          <label>Lớp</label>
+          <input id="className" placeholder="Ví dụ: 8/3" />
+
+          <label>Người trực / giáo viên</label>
+          <input id="operatorName" placeholder="Ví dụ: Thầy Dương Quốc" />
+
+          <label>Ghi chú khu vực</label>
+          <textarea id="note" placeholder="Ví dụ: Hành lang tầng 2, giờ ra chơi"></textarea>
+
+          <div class="btn-row">
+            <button class="btn-primary" onclick="startCamera()">Bật camera</button>
+            <button class="btn-warning" onclick="analyzeNow()">Phân tích 1 ảnh</button>
+            <button class="btn-success" id="autoBtn" onclick="toggleAuto()">Bật tự động</button>
+          </div>
+
+          <p class="muted">
+            Camera chỉ hoạt động khi trang chạy trên HTTPS hoặc localhost.
+          </p>
+        </div>
+
+        <div>
+          <video id="video" autoplay playsinline muted></video>
+          <canvas id="canvas" style="display:none;"></canvas>
+          <img id="snapshotPreview" class="preview" alt="Ảnh vừa chụp" />
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Kết quả phân tích</h2>
+      <div id="statusArea" class="status LOW">Chưa có dữ liệu.</div>
+      <div id="detailArea"></div>
+    </div>
+  </div>
+
+  <script>
+    const API_URL = 'https://script.google.com/macros/s/AKfycbx1MP2x2nqO-z6tj2o9Gk_GPdYLSd8-ZCLTWWk3nCn0NzDgvG3uCsdAVRg6tyrZw3wo/exec';
+
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusArea = document.getElementById('statusArea');
+    const detailArea = document.getElementById('detailArea');
+    const snapshotPreview = document.getElementById('snapshotPreview');
+    const autoBtn = document.getElementById('autoBtn');
+
+    let streamRef = null;
+    let autoTimer = null;
+    let isBusy = false;
+
+    function setStatus(text, level) {
+      statusArea.className = 'status ' + (level || 'LOW');
+      statusArea.textContent = text;
+    }
+
+    function setDetail(html) {
+      detailArea.innerHTML = html || '';
+    }
+
+    async function startCamera() {
+      try {
+        if (streamRef) {
+          stopCamera();
+        }
+
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'user',
+            width: { ideal: 960 },
+            height: { ideal: 540 }
+          },
+          audio: false
+        });
+
+        streamRef = stream;
+        video.srcObject = stream;
+        await video.play();
+
+        video.onloadedmetadata = () => {
+          canvas.width = video.videoWidth || 960;
+          canvas.height = video.videoHeight || 540;
+        };
+
+        setStatus('Camera đã sẵn sàng.', 'SAFE');
+        setDetail('');
+      } catch (err) {
+        setStatus('Không mở được camera: ' + (err.message || err), 'HIGH');
+      }
+    }
+
+    function stopCamera() {
+      if (streamRef) {
+        streamRef.getTracks().forEach(track => track.stop());
+        streamRef = null;
+      }
+    }
+
+    function captureBase64() {
+      if (!video.srcObject) {
+        throw new Error('Camera chưa bật.');
+      }
+
+      if (!canvas.width || !canvas.height) {
+        canvas.width = video.videoWidth || 960;
+        canvas.height = video.videoHeight || 540;
+      }
+
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+
+      snapshotPreview.src = dataUrl;
+      snapshotPreview.style.display = 'block';
+
+      return dataUrl.split(',')[1];
+    }
+
+    function getPayload() {
+      return {
+        imageBase64: captureBase64(),
+        mimeType: 'image/jpeg',
+        studentName: document.getElementById('studentName').value.trim(),
+        className: document.getElementById('className').value.trim(),
+        operatorName: document.getElementById('operatorName').value.trim(),
+        note: document.getElementById('note').value.trim()
+      };
+    }
+
+    async function analyzeNow() {
+      if (isBusy) return;
+
+      try {
+        const payload = getPayload();
+        isBusy = true;
+        setStatus('Đang phân tích ảnh...', 'LOW');
+        setDetail('Vui lòng chờ vài giây...');
+
+        const response = await fetch(API_URL, {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+
+        const data = await response.json();
+        isBusy = false;
+
+        if (!data.ok) {
+          setStatus('Lỗi: ' + (data.error || 'Không rõ nguyên nhân'), 'HIGH');
+          setDetail('');
+          return;
+        }
+
+        renderResult(data);
+
+      } catch (err) {
+        isBusy = false;
+        setStatus('Lỗi gửi dữ liệu: ' + (err.message || err), 'HIGH');
+        setDetail('');
+      }
+    }
+
+    function renderResult(data) {
+      const result = data.result || {};
+      const riskLevel = result.riskLevel || 'LOW';
+      const riskScore = typeof result.riskScore === 'number' ? result.riskScore : 0;
+      const reasons = Array.isArray(result.reasons) ? result.reasons : [];
+      const recommendedAction = result.recommendedAction || '';
+      const studentObservation = result.studentObservation || '';
+
+      setStatus('Mức nguy cơ: ' + riskLevel + ' | Điểm: ' + riskScore, riskLevel);
+
+      let html = '';
+      html += '<p><b>Khuyến nghị:</b> ' + escapeHtml(recommendedAction) + '</p>';
+      html += '<p><b>Quan sát:</b> ' + escapeHtml(studentObservation) + '</p>';
+
+      if (reasons.length > 0) {
+        html += '<p><b>Lý do:</b></p><ul>';
+        reasons.forEach(item => {
+          html += '<li>' + escapeHtml(item) + '</li>';
+        });
+        html += '</ul>';
+      }
+
+      if (data.imageUrl) {
+        html += '<p><a href="' + data.imageUrl + '" target="_blank">Mở ảnh đã lưu trên Drive</a></p>';
+      }
+
+      setDetail(html);
+
+      if (riskLevel === 'HIGH') {
+        alert('CẢNH BÁO MỨC CAO: Hệ thống phát hiện nguy cơ cao. Đề nghị kiểm tra ngay.');
+      }
+    }
+
+    function toggleAuto() {
+      if (autoTimer) {
+        clearInterval(autoTimer);
+        autoTimer = null;
+        autoBtn.textContent = 'Bật tự động';
+        autoBtn.className = 'btn-success';
+        setStatus('Đã tắt chế độ tự động.', 'LOW');
+        return;
+      }
+
+      autoTimer = setInterval(() => {
+        if (!isBusy) {
+          analyzeNow();
+        }
+      }, 8000);
+
+      autoBtn.textContent = 'Tắt tự động';
+      autoBtn.className = 'btn-danger';
+      setStatus('Đã bật chế độ tự động mỗi 8 giây.', 'SAFE');
+    }
+
+    function escapeHtml(str) {
+      return String(str || '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    window.addEventListener('beforeunload', stopCamera);
+  </script>
+</body>
+</html>
