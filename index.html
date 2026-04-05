@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Camera phát hiện nguy cơ bạo lực học đường</title>
+  <title>Ứng dụng camera phát hiện nguy cơ bạo lực học đường</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -14,7 +14,7 @@
       padding: 20px;
     }
     .container {
-      max-width: 1100px;
+      max-width: 1150px;
       margin: 0 auto;
     }
     .card {
@@ -43,7 +43,7 @@
       margin-top: 12px;
       margin-bottom: 6px;
     }
-    input, textarea, button {
+    input, textarea, button, select {
       width: 100%;
       padding: 11px 12px;
       border: 1px solid #cbd5e1;
@@ -53,6 +53,11 @@
     textarea {
       min-height: 84px;
       resize: vertical;
+    }
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
     }
     .btn-row {
       display: grid;
@@ -85,6 +90,7 @@
       border-radius: 14px;
       font-weight: 700;
       line-height: 1.5;
+      white-space: pre-wrap;
     }
     .SAFE   { background: #e8f5e9; color: #166534; }
     .LOW    { background: #fff8e1; color: #92400e; }
@@ -96,8 +102,15 @@
     }
     ul { margin-top: 8px; padding-left: 18px; }
     a { color: #2563eb; }
+    .small-note {
+      margin-top: 8px;
+      font-size: 13px;
+      color: #64748b;
+    }
     @media (max-width: 900px) {
-      .grid, .btn-row { grid-template-columns: 1fr; }
+      .grid, .btn-row, .two-col {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
@@ -112,6 +125,9 @@
 
       <div class="grid">
         <div>
+          <label>Camera</label>
+          <select id="cameraSelect"></select>
+
           <label>Họ và tên học sinh</label>
           <input id="studentName" placeholder="Ví dụ: Nguyễn Văn A" />
 
@@ -124,6 +140,27 @@
           <label>Ghi chú khu vực</label>
           <textarea id="note" placeholder="Ví dụ: Hành lang tầng 2, giờ ra chơi"></textarea>
 
+          <div class="two-col">
+            <div>
+              <label>Chu kỳ quét</label>
+              <select id="scanInterval">
+                <option value="3000">3 giây</option>
+                <option value="5000" selected>5 giây</option>
+                <option value="10000">10 giây</option>
+                <option value="20000">20 giây</option>
+              </select>
+            </div>
+
+            <div>
+              <label>Độ nhạy cảnh báo</label>
+              <select id="sensitivity">
+                <option value="strict">Nghiêm ngặt</option>
+                <option value="balanced" selected>Cân bằng</option>
+                <option value="high">Nhạy cao</option>
+              </select>
+            </div>
+          </div>
+
           <div class="btn-row">
             <button class="btn-primary" onclick="startCamera()">Bật camera</button>
             <button class="btn-warning" onclick="analyzeNow()">Phân tích 1 ảnh</button>
@@ -133,6 +170,9 @@
           <p class="muted">
             Camera chỉ hoạt động khi trang chạy trên HTTPS hoặc localhost.
           </p>
+          <div class="small-note">
+            Nếu Gemini bị vượt quota, hệ thống sẽ tự tạm dừng rồi báo thời gian chờ.
+          </div>
         </div>
 
         <div>
@@ -151,7 +191,7 @@
   </div>
 
   <script>
-    const API_URL = 'https://script.google.com/macros/s/AKfycbx1MP2x2nqO-z6tj2o9Gk_GPdYLSd8-ZCLTWWk3nCn0NzDgvG3uCsdAVRg6tyrZw3wo/exec';
+    const API_URL = 'https://script.google.com/macros/s/AKfycbw1a1QvLf6j3A1_2lEaPjv54uk6jQOXuWWWQKmlms7rKRSjuiLI6ZRPHvg_ttopo7Tp/exec';
 
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
@@ -160,10 +200,50 @@
     const detailArea = document.getElementById('detailArea');
     const snapshotPreview = document.getElementById('snapshotPreview');
     const autoBtn = document.getElementById('autoBtn');
+    const cameraSelect = document.getElementById('cameraSelect');
+    const scanIntervalSelect = document.getElementById('scanInterval');
+    const sensitivitySelect = document.getElementById('sensitivity');
 
     let streamRef = null;
     let autoTimer = null;
     let isBusy = false;
+    let cooldownUntil = 0;
+
+    window.addEventListener('load', initCameraDevices);
+    window.addEventListener('beforeunload', stopCamera);
+
+    async function initCameraDevices() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+        setStatus('Trình duyệt không hỗ trợ enumerateDevices().', 'HIGH');
+        return;
+      }
+
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        fillCameraList(devices.filter(d => d.kind === 'videoinput'));
+      } catch (err) {
+        setStatus('Không đọc được danh sách camera: ' + (err.message || err), 'HIGH');
+      }
+    }
+
+    function fillCameraList(videoInputs) {
+      cameraSelect.innerHTML = '';
+
+      if (!videoInputs || videoInputs.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = '';
+        opt.textContent = 'Không tìm thấy camera';
+        cameraSelect.appendChild(opt);
+        return;
+      }
+
+      videoInputs.forEach((device, index) => {
+        const opt = document.createElement('option');
+        opt.value = device.deviceId;
+        opt.textContent = device.label || ('Camera ' + (index + 1));
+        cameraSelect.appendChild(opt);
+      });
+    }
 
     function setStatus(text, level) {
       statusArea.className = 'status ' + (level || 'LOW');
@@ -176,19 +256,17 @@
 
     async function startCamera() {
       try {
-        if (streamRef) {
-          stopCamera();
-        }
+        stopCamera();
 
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'user',
-            width: { ideal: 960 },
-            height: { ideal: 540 }
-          },
+        const selectedDeviceId = cameraSelect.value;
+        const constraints = {
+          video: selectedDeviceId
+            ? { deviceId: { exact: selectedDeviceId }, width: { ideal: 960 }, height: { ideal: 540 } }
+            : { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 } },
           audio: false
-        });
+        };
 
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
         streamRef = stream;
         video.srcObject = stream;
         await video.play();
@@ -197,6 +275,11 @@
           canvas.width = video.videoWidth || 960;
           canvas.height = video.videoHeight || 540;
         };
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const currentValue = cameraSelect.value;
+        fillCameraList(devices.filter(d => d.kind === 'videoinput'));
+        if (currentValue) cameraSelect.value = currentValue;
 
         setStatus('Camera đã sẵn sàng.', 'SAFE');
         setDetail('');
@@ -231,6 +314,11 @@
       return dataUrl.split(',')[1];
     }
 
+    function getSelectedCameraName() {
+      if (cameraSelect.selectedIndex < 0) return '';
+      return cameraSelect.options[cameraSelect.selectedIndex].text || '';
+    }
+
     function getPayload() {
       return {
         imageBase64: captureBase64(),
@@ -238,12 +326,22 @@
         studentName: document.getElementById('studentName').value.trim(),
         className: document.getElementById('className').value.trim(),
         operatorName: document.getElementById('operatorName').value.trim(),
-        note: document.getElementById('note').value.trim()
+        note: document.getElementById('note').value.trim(),
+        cameraName: getSelectedCameraName(),
+        scanIntervalMs: Number(scanIntervalSelect.value || 5000),
+        sensitivity: sensitivitySelect.value || 'balanced'
       };
     }
 
     async function analyzeNow() {
       if (isBusy) return;
+
+      const now = Date.now();
+      if (cooldownUntil > now) {
+        const remain = Math.ceil((cooldownUntil - now) / 1000);
+        setStatus('Đang chờ hết cooldown quota. Còn ' + remain + ' giây.', 'LOW');
+        return;
+      }
 
       try {
         const payload = getPayload();
@@ -253,6 +351,9 @@
 
         const response = await fetch(API_URL, {
           method: 'POST',
+          headers: {
+            'Content-Type': 'text/plain;charset=utf-8'
+          },
           body: JSON.stringify(payload)
         });
 
@@ -260,6 +361,13 @@
         isBusy = false;
 
         if (!data.ok) {
+          if (data.retryAfterMs) {
+            cooldownUntil = Date.now() + Number(data.retryAfterMs);
+            setStatus(data.error || 'Gemini đang vượt quota.', 'HIGH');
+            setDetail('<p>Hệ thống sẽ tạm chờ theo thời gian cooldown rồi mới gửi tiếp.</p>');
+            return;
+          }
+
           setStatus('Lỗi: ' + (data.error || 'Không rõ nguyên nhân'), 'HIGH');
           setDetail('');
           return;
@@ -285,6 +393,9 @@
       setStatus('Mức nguy cơ: ' + riskLevel + ' | Điểm: ' + riskScore, riskLevel);
 
       let html = '';
+      html += '<p><b>Camera:</b> ' + escapeHtml(getSelectedCameraName()) + '</p>';
+      html += '<p><b>Chu kỳ quét:</b> ' + escapeHtml(scanIntervalSelect.options[scanIntervalSelect.selectedIndex].text) + '</p>';
+      html += '<p><b>Độ nhạy:</b> ' + escapeHtml(sensitivitySelect.options[sensitivitySelect.selectedIndex].text) + '</p>';
       html += '<p><b>Khuyến nghị:</b> ' + escapeHtml(recommendedAction) + '</p>';
       html += '<p><b>Quan sát:</b> ' + escapeHtml(studentObservation) + '</p>';
 
@@ -317,15 +428,25 @@
         return;
       }
 
+      const selectedMs = Number(scanIntervalSelect.value || 5000);
+
       autoTimer = setInterval(() => {
         if (!isBusy) {
           analyzeNow();
         }
-      }, 8000);
+      }, selectedMs);
 
       autoBtn.textContent = 'Tắt tự động';
       autoBtn.className = 'btn-danger';
-      setStatus('Đã bật chế độ tự động mỗi 8 giây.', 'SAFE');
+      setStatus('Đã bật chế độ tự động. Chu kỳ quét: ' + formatIntervalText(selectedMs) + '.', 'SAFE');
+    }
+
+    function formatIntervalText(ms) {
+      if (ms === 3000) return '3 giây';
+      if (ms === 5000) return '5 giây';
+      if (ms === 10000) return '10 giây';
+      if (ms === 20000) return '20 giây';
+      return ms + ' ms';
     }
 
     function escapeHtml(str) {
@@ -336,8 +457,6 @@
         .replaceAll('"', '&quot;')
         .replaceAll("'", '&#039;');
     }
-
-    window.addEventListener('beforeunload', stopCamera);
   </script>
 </body>
 </html>
